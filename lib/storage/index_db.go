@@ -2391,84 +2391,11 @@ func isSingleMetricNameFilter(tfss []*TagFilters) bool {
 	return len(tfss) == 1 && len(tfss[0].tfs) == 1 && getMetricNameFilter(tfss[0]) != nil
 }
 
-// searchMetricIDs returns metricIDs for the given tfss and tr.
-//
-// The returned metricIDs are sorted.
-func (is *indexSearch) searchMetricIDs(qt *querytracer.Tracer, tfss []*TagFilters, tr TimeRange, maxMetrics int) (*uint64set.Set, error) {
-	metricIDs, err := is.searchMetricIDsInternal(qt, tfss, tr, maxMetrics)
-	if err != nil {
-		return nil, err
-	}
-	if metricIDs.Len() == 0 {
-		// Nothing found
-		return nil, nil
-	}
-
-	// Filter out deleted metricIDs.
-	dmis := is.db.getDeletedMetricIDs()
-	metricIDs.Subtract(dmis)
-
-	return metricIDs, nil
-}
-
 func errTooManyTimeseries(maxMetrics int) error {
 	return fmt.Errorf("the number of matching timeseries exceeds %d; "+
 		"either narrow down the search or increase -search.max* command-line flag values "+
 		"(the most likely limit is -search.maxUniqueTimeseries); "+
 		"see https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#resource-usage-limits", maxMetrics)
-}
-
-func (is *indexSearch) searchMetricIDsInternal(qt *querytracer.Tracer, tfss []*TagFilters, tr TimeRange, maxMetrics int) (*uint64set.Set, error) {
-	qt = qt.NewChild("search for metric ids: filters=%s, timeRange=%s, maxMetrics=%d", tfss, &tr, maxMetrics)
-	defer qt.Done()
-
-	if tr.MinTimestamp >= is.db.s.minTimestampForCompositeIndex {
-		tfss = convertToCompositeTagFilterss(tfss)
-		qt.Printf("composite filters=%s", tfss)
-	}
-
-	metricIDs := &uint64set.Set{}
-	for _, tfs := range tfss {
-		if len(tfs.tfs) == 0 {
-			// An empty filters must be equivalent to `{__name__!=""}`
-			tfs = NewTagFilters()
-			if err := tfs.Add(nil, nil, true, false); err != nil {
-				logger.Panicf(`BUG: cannot add {__name__!=""} filter: %s`, err)
-			}
-		}
-		qtChild := qt.NewChild("update metric ids: filters=%s, timeRange=%s", tfs, &tr)
-		prevMetricIDsLen := metricIDs.Len()
-		err := is.updateMetricIDsForTagFilters(qtChild, metricIDs, tfs, tr, maxMetrics+1)
-		qtChild.Donef("updated %d metric ids", metricIDs.Len()-prevMetricIDsLen)
-		if err != nil {
-			return nil, err
-		}
-		if metricIDs.Len() > maxMetrics {
-			return nil, errTooManyTimeseries(maxMetrics)
-		}
-	}
-	return metricIDs, nil
-}
-
-func (is *indexSearch) updateMetricIDsForTagFilters(qt *querytracer.Tracer, metricIDs *uint64set.Set, tfs *TagFilters, tr TimeRange, maxMetrics int) error {
-	if tr != globalIndexTimeRange {
-		// Fast path - search metricIDs by date range in the per-day inverted
-		// index.
-		qt.Printf("search metric ids in the per-day index")
-		is.db.dateRangeSearchCalls.Add(1)
-		minDate, maxDate := tr.DateRange()
-		return is.updateMetricIDsForDateRange(qt, metricIDs, tfs, minDate, maxDate, maxMetrics)
-	}
-
-	// Slow path - search metricIDs in the global inverted index.
-	qt.Printf("search metric ids in the global index")
-	is.db.globalSearchCalls.Add(1)
-	m, err := is.getMetricIDsForDateAndFilters(qt, globalIndexDate, tfs, maxMetrics)
-	if err != nil {
-		return err
-	}
-	metricIDs.UnionMayOwn(m)
-	return nil
 }
 
 func (is *indexSearch) getMetricIDsForTagFilter(qt *querytracer.Tracer, tf *tagFilter, maxMetrics int, maxLoopsCount int64) (*uint64set.Set, int64, error) {
@@ -2641,58 +2568,6 @@ func (is *indexSearch) updateMetricIDsForOrSuffix(prefix []byte, metricIDs *uint
 		return loopsCount, fmt.Errorf("error when searching for tag filter prefix %q: %w", prefix, err)
 	}
 	return loopsCount, nil
-}
-
-func (is *indexSearch) updateMetricIDsForDateRange(qt *querytracer.Tracer, metricIDs *uint64set.Set, tfs *TagFilters, minDate, maxDate uint64, maxMetrics int) error {
-	if minDate == maxDate {
-		// Fast path - query only a single date.
-		m, err := is.getMetricIDsForDateAndFilters(qt, minDate, tfs, maxMetrics)
-		if err != nil {
-			return err
-		}
-		metricIDs.UnionMayOwn(m)
-		is.db.dateRangeSearchHits.Add(1)
-		return nil
-	}
-
-	// Slower path - search for metricIDs for each day in parallel.
-	qt = qt.NewChild("parallel search for metric ids in per-day index: filters=%s, dayRange=[%d..%d]", tfs, minDate, maxDate)
-	defer qt.Done()
-	wg := getWaitGroup()
-	var errGlobal error
-	var mu sync.Mutex // protects metricIDs + errGlobal vars from concurrent access below
-	for minDate <= maxDate {
-		date := minDate
-		qtChild := qt.NewChild("parallel thread for date=%s", dateToString(date))
-		wg.Go(func() {
-			defer qtChild.Done()
-
-			isLocal := is.db.getIndexSearch(is.deadline)
-			m, err := isLocal.getMetricIDsForDateAndFilters(qtChild, date, tfs, maxMetrics)
-			is.db.putIndexSearch(isLocal)
-			mu.Lock()
-			defer mu.Unlock()
-			if errGlobal != nil {
-				return
-			}
-			if err != nil {
-				dateStr := time.Unix(int64(date*24*3600), 0)
-				errGlobal = fmt.Errorf("cannot search for metricIDs at %s: %w", dateStr, err)
-				return
-			}
-			if metricIDs.Len() < maxMetrics {
-				metricIDs.UnionMayOwn(m)
-			}
-		})
-		minDate++
-	}
-	wg.Wait()
-	putWaitGroup(wg)
-	if errGlobal != nil {
-		return errGlobal
-	}
-	is.db.dateRangeSearchHits.Add(1)
-	return nil
 }
 
 func (is *indexSearch) getMetricIDsForDateAndFilters(qt *querytracer.Tracer, date uint64, tfs *TagFilters, maxMetrics int) (*uint64set.Set, error) {
