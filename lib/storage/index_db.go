@@ -727,9 +727,7 @@ func (db *indexDB) SearchLabelValues(qt *querytracer.Tracer, labelName string, t
 		// without any filters and limits and then later applying the filter and the limit to the found label values.
 		qt.Printf("search up to %d values for the label %q on the time range %s", maxMetrics, labelName, &tr)
 
-		is := db.getIndexSearch(deadline)
-		lvs, err := is.searchLabelValuesOnTimeRange(qt, labelName, nil, tr, maxMetrics, maxMetrics)
-		db.putIndexSearch(is)
+		lvs, err := db.searchLabelValues(qt, labelName, nil, tr, maxMetrics, maxMetrics, deadline)
 		if err != nil {
 			return nil, db.wrapError("search label values", err)
 		}
@@ -753,9 +751,7 @@ func (db *indexDB) SearchLabelValues(qt *querytracer.Tracer, labelName string, t
 		qt.Printf("fall back to slow search because only a subset of label values is found")
 	}
 
-	is := db.getIndexSearch(deadline)
-	lvs, err := is.searchLabelValuesOnTimeRange(qt, labelName, tfss, tr, maxMetrics, maxMetrics)
-	db.putIndexSearch(is)
+	lvs, err := db.searchLabelValues(qt, labelName, tfss, tr, maxMetrics, maxMetrics, deadline)
 	if err != nil {
 		return nil, db.wrapError("search label values", err)
 	}
@@ -780,10 +776,10 @@ func filterLabelValues(lvs map[string]struct{}, tf *tagFilter, key string) {
 	}
 }
 
-func (is *indexSearch) searchLabelValuesOnTimeRange(qt *querytracer.Tracer, labelName string, tfss []*TagFilters, tr TimeRange, maxLabelValues, maxMetrics int) (map[string]struct{}, error) {
+func (db *indexDB) searchLabelValues(qt *querytracer.Tracer, labelName string, tfss []*TagFilters, tr TimeRange, maxLabelValues, maxMetrics int, deadline uint64) (map[string]struct{}, error) {
 	if tr == globalIndexTimeRange {
 		qtChild := qt.NewChild("search for label values in global index: labelName=%q, filters=%s", labelName, tfss)
-		lvs, err := is.searchLabelValuesOnDate(qtChild, labelName, tfss, globalIndexDate, maxLabelValues, maxMetrics)
+		lvs, err := db.searchLabelValuesByDateAndFilters(qtChild, globalIndexDate, labelName, tfss, maxLabelValues, maxMetrics, deadline)
 		qtChild.Done()
 
 		// Skip empty values, since they have no any meaning.
@@ -804,9 +800,7 @@ func (is *indexSearch) searchLabelValuesOnTimeRange(qt *querytracer.Tracer, labe
 		wg.Go(func() {
 			defer qtChild.Done()
 
-			isLocal := is.db.getIndexSearch(is.deadline)
-			lvsLocal, err := isLocal.searchLabelValuesOnDate(qtChild, labelName, tfss, date, maxLabelValues, maxMetrics)
-			is.db.putIndexSearch(isLocal)
+			lvsLocal, err := db.searchLabelValuesByDateAndFilters(qtChild, date, labelName, tfss, maxLabelValues, maxMetrics, deadline)
 			mu.Lock()
 			defer mu.Unlock()
 			if errGlobal != nil {
@@ -835,16 +829,20 @@ func (is *indexSearch) searchLabelValuesOnTimeRange(qt *querytracer.Tracer, labe
 	return lvs, errGlobal
 }
 
-func (is *indexSearch) searchLabelValuesOnDate(qt *querytracer.Tracer, labelName string, tfss []*TagFilters, date uint64, maxLabelValues, maxMetrics int) (map[string]struct{}, error) {
+func (db *indexDB) searchLabelValuesByDateAndFilters(qt *querytracer.Tracer, date uint64, labelName string, tfss []*TagFilters, maxLabelValues, maxMetrics int, deadline uint64) (map[string]struct{}, error) {
 	if labelName == "__name__" {
 		// __name__ label is encoded as empty string in indexdb.
 		labelName = ""
 	}
+	is := db.getIndexSearch(deadline)
+	defer db.putIndexSearch(is)
 	useCompositeScan := labelName != "" && isSingleMetricNameFilter(tfss)
 	var filter *uint64set.Set
 	if !useCompositeScan {
 		var err error
-		filter, err = is.searchMetricIDsWithFiltersOnDate(qt, tfss, date, maxMetrics)
+		// TODO(@rtm0): It asks for non-composite scan but
+		// searchMetricIDsByDateAndFilters will convert it to composite filter.
+		filter, err = db.searchMetricIDsByDateAndFilters(qt, tfss, date, maxMetrics, deadline, true)
 		if err != nil {
 			return nil, err
 		}
