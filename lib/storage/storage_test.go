@@ -932,11 +932,7 @@ func TestStorageDeleteSeries_CachesAreUpdatedOrReset(t *testing.T) {
 		}
 		minDate, maxDate := tfssTR.DateRange()
 		for date := minDate; date <= maxDate; date++ {
-			cacheTR := TimeRange{
-				MinTimestamp: int64(date) * msecPerDay,
-				MaxTimestamp: int64(date+1)*msecPerDay - 1,
-			}
-			tfssKey := marshalTagFiltersKey(nil, tfss, cacheTR)
+			tfssKey := marshalTagFiltersKey(nil, tfss, date)
 			_, got := idb.getMetricIDsFromTagFiltersCache(nil, tfssKey)
 			if got != want {
 				t.Errorf("unexpected tag filters in cache %v %s: got %t, want %t", tfss, dateToString(date), got, want)

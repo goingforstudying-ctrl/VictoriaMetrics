@@ -327,9 +327,9 @@ func (db *indexDB) MustClose() {
 }
 
 // getMetricIDsFromTagFiltersCache retrieves the set of metricIDs that
-// correspond to the given (tffs, tr) key.
+// correspond to the given (tffs, date) key.
 //
-// The caller must convert the (tfss, tr) to a byte slice and use it as the key
+// The caller must convert the (tfss, date) to a byte slice and use it as the key
 // when calling this method (see marshalTagFiltersKey()).
 //
 // The caller must not modify the set of metricIDs returned by this method.
@@ -346,9 +346,9 @@ func (db *indexDB) getMetricIDsFromTagFiltersCache(qt *querytracer.Tracer, key [
 }
 
 // putMetricIDsToTagFiltersCache stores the set of metricIDs that
-// correspond to the given (tffs, tr) key into the cache.
+// correspond to the given (tffs, date) key into the cache.
 //
-// The caller must convert the (tfss, tr) to a byte slice and use it as the key
+// The caller must convert the (tfss, date) to a byte slice and use it as the key
 // when calling this method (see marshalTagFiltersKey()).
 //
 // The caller must not modify the set of metricIDs after calling this method.
@@ -358,11 +358,8 @@ func (db *indexDB) putMetricIDsToTagFiltersCache(qt *querytracer.Tracer, metricI
 	qt.Printf("stored %d metricIDs into cache", metricIDs.Len())
 }
 
-func marshalTagFiltersKey(dst []byte, tfss []*TagFilters, tr TimeRange) []byte {
-	// Round start and end times to per-day granularity according to per-day inverted index.
-	startDate, endDate := tr.DateRange()
-	dst = encoding.MarshalUint64(dst, startDate)
-	dst = encoding.MarshalUint64(dst, endDate)
+func marshalTagFiltersKey(dst []byte, tfss []*TagFilters, date uint64) []byte {
+	dst = encoding.MarshalUint64(dst, date)
 	for _, tfs := range tfss {
 		dst = append(dst, 0) // separator between tfs groups.
 		for i := range tfs.tfs {
@@ -1758,14 +1755,6 @@ func (db *indexDB) searchMetricIDs(qt *querytracer.Tracer, tfss []*TagFilters, t
 	return uniqMetricIDsByDate, nil
 }
 
-func marshalTagFiltersKeyForDate(key []byte, tfss []*TagFilters, date uint64) []byte {
-	tr := TimeRange{
-		MinTimestamp: int64(date) * msecPerDay,
-		MaxTimestamp: int64(date+1)*msecPerDay - 1,
-	}
-	return marshalTagFiltersKey(key, tfss, tr)
-}
-
 func (db *indexDB) searchMetricIDsByDateAndFilters(qt *querytracer.Tracer, tfss []*TagFilters, date uint64, maxMetrics int, deadline uint64, useCache bool) (*uint64set.Set, error) {
 	// TODO: stringToDate
 	qt = qt.NewChild("search metricIDs: filters=%s, date=%d", tfss, date)
@@ -1779,7 +1768,7 @@ func (db *indexDB) searchMetricIDsByDateAndFilters(qt *querytracer.Tracer, tfss 
 	defer tagFiltersKeyBufPool.Put(tfKeyBuf)
 
 	if useCache {
-		tfKeyBuf.B = marshalTagFiltersKeyForDate(tfKeyBuf.B[:0], tfss, date)
+		tfKeyBuf.B = marshalTagFiltersKey(tfKeyBuf.B[:0], tfss, date)
 		if metricIDs, ok := db.getMetricIDsFromTagFiltersCache(qt, tfKeyBuf.B); ok {
 			// Fast path - metricIDs found in the cache
 			if metricIDs.Len() > maxMetrics {
