@@ -1691,7 +1691,7 @@ func (is *indexSearch) loadDeletedMetricIDs() (*uint64set.Set, error) {
 	return dmis, nil
 }
 
-func (db *indexDB) searchMetricIDsByTimeRangeAndFilters(qt *querytracer.Tracer, tfss []*TagFilters, tr TimeRange, maxMetrics int, deadline uint64) (map[uint64]*uint64set.Set, error) {
+func (db *indexDB) searchMetricIDs(qt *querytracer.Tracer, tfss []*TagFilters, tr TimeRange, maxMetrics int, deadline uint64) (map[uint64]*uint64set.Set, error) {
 	uniqMetricIDsByDate := make(map[uint64]*uint64set.Set)
 	f := func(date uint64) (map[uint64]*uint64set.Set, error) {
 		metricIDs, err := db.searchMetricIDsByDateAndFilters(qt, tfss, date, maxMetrics, deadline, true)
@@ -1829,42 +1829,6 @@ func (db *indexDB) searchMetricIDsByDateAndFilters(qt *querytracer.Tracer, tfss 
 	return metricIDs, nil
 }
 
-// searchMetricIDs returns metricIDs for the given tfss and tr.
-func (db *indexDB) searchMetricIDs(qt *querytracer.Tracer, tfss []*TagFilters, tr TimeRange, maxMetrics int, deadline uint64) (*uint64set.Set, error) {
-	qt = qt.NewChild("search metricIDs: filters=%s, timeRange=%s", tfss, &tr)
-	defer qt.Done()
-
-	if len(tfss) == 0 {
-		return nil, nil
-	}
-
-	tfKeyBuf := tagFiltersKeyBufPool.Get()
-	defer tagFiltersKeyBufPool.Put(tfKeyBuf)
-
-	tfKeyBuf.B = marshalTagFiltersKey(tfKeyBuf.B[:0], tfss, tr)
-	metricIDs, ok := db.getMetricIDsFromTagFiltersCache(qt, tfKeyBuf.B)
-	if ok {
-		// Fast path - metricIDs found in the cache
-		if metricIDs.Len() > maxMetrics {
-			return nil, errTooManyTimeseries(maxMetrics)
-		}
-		return metricIDs, nil
-	}
-
-	// Slow path - search for metricIDs in the db
-	is := db.getIndexSearch(deadline)
-	metricIDs, err := is.searchMetricIDs(qt, tfss, tr, maxMetrics)
-	db.putIndexSearch(is)
-	if err != nil {
-		return nil, fmt.Errorf("failed to search metricIDs: %w", err)
-	}
-
-	// Store metricIDs in the cache.
-	db.putMetricIDsToTagFiltersCache(qt, metricIDs, tfKeyBuf.B)
-
-	return metricIDs, nil
-}
-
 func (db *indexDB) wrapError(op string, err error) error {
 	return fmt.Errorf("failed to %s in indexDB %q: %w", op, db.name, err)
 }
@@ -1893,7 +1857,7 @@ func (db *indexDB) SearchTSIDs(qt *querytracer.Tracer, tfss []*TagFilters, tr Ti
 }
 
 func (db *indexDB) searchTSIDs(qt *querytracer.Tracer, tfss []*TagFilters, tr TimeRange, maxMetrics int, deadline uint64) ([]TSID, error) {
-	uniqMetricIDsByDate, err := db.searchMetricIDsByTimeRangeAndFilters(qt, tfss, tr, maxMetrics, deadline)
+	uniqMetricIDsByDate, err := db.searchMetricIDs(qt, tfss, tr, maxMetrics, deadline)
 	if err != nil {
 		return nil, err
 	}
@@ -2023,7 +1987,7 @@ func (db *indexDB) SearchMetricNames(qt *querytracer.Tracer, tfss []*TagFilters,
 }
 
 func (db *indexDB) searchMetricNames(qt *querytracer.Tracer, tfss []*TagFilters, tr TimeRange, maxMetrics int, deadline uint64) ([]string, error) {
-	uniqMetricIDsByDate, err := db.searchMetricIDsByTimeRangeAndFilters(qt, tfss, tr, maxMetrics, deadline)
+	uniqMetricIDsByDate, err := db.searchMetricIDs(qt, tfss, tr, maxMetrics, deadline)
 	if err != nil {
 		return nil, err
 	}
