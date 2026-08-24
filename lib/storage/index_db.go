@@ -1736,6 +1736,11 @@ func (db *indexDB) searchMetricIDsByTimeRangeAndFilters(qt *querytracer.Tracer, 
 			continue
 		}
 
+		// Create a copy in order to preserve the original this may be coming
+		// from a tfssCache.
+		// The copying could be move to cache's get/put methods, do it here
+		// because copying is needed only in case of deduplication after the
+		// concurrent multi-day searches.
 		uniqMetricIDs := metricIDs.Clone()
 		uniqMetricIDs.Subtract(seen)
 		seen.Union(uniqMetricIDs)
