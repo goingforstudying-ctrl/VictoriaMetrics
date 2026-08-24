@@ -1294,9 +1294,7 @@ func (db *indexDB) GetTSDBStatus(qt *querytracer.Tracer, tfss []*TagFilters, dat
 		return &TSDBStatus{}, nil
 	}
 
-	is := db.getIndexSearch(deadline)
-	defer db.putIndexSearch(is)
-	status, err := is.getTSDBStatus(qt, tfss, date, focusLabel, topN, maxMetrics)
+	status, err := db.getTSDBStatus(qt, date, tfss, focusLabel, topN, maxMetrics, deadline)
 	if err != nil {
 		return nil, db.wrapError("collect TSDB status", err)
 	}
@@ -1304,8 +1302,8 @@ func (db *indexDB) GetTSDBStatus(qt *querytracer.Tracer, tfss []*TagFilters, dat
 }
 
 // getTSDBStatus returns topN entries for tsdb status for the given tfss, date and focusLabel.
-func (is *indexSearch) getTSDBStatus(qt *querytracer.Tracer, tfss []*TagFilters, date uint64, focusLabel string, topN, maxMetrics int) (*TSDBStatus, error) {
-	filter, err := is.searchMetricIDsWithFiltersOnDate(qt, tfss, date, maxMetrics)
+func (db *indexDB) getTSDBStatus(qt *querytracer.Tracer, date uint64, tfss []*TagFilters, focusLabel string, topN, maxMetrics int, deadline uint64) (*TSDBStatus, error) {
+	filter, err := db.searchMetricIDsByDateAndFilters(qt, tfss, date, maxMetrics, deadline, true)
 	if err != nil {
 		return nil, err
 	}
@@ -1313,6 +1311,9 @@ func (is *indexSearch) getTSDBStatus(qt *querytracer.Tracer, tfss []*TagFilters,
 		qt.Printf("no matching series for filter=%s", tfss)
 		return &TSDBStatus{}, nil
 	}
+
+	is := db.getIndexSearch(deadline)
+	defer db.putIndexSearch(is)
 
 	ts := &is.ts
 	kb := &is.kb
@@ -2388,28 +2389,6 @@ func matchTagFilters(mn *MetricName, tfs []*tagFilter, kb *bytesutil.ByteBuffer)
 func isSingleMetricNameFilter(tfss []*TagFilters) bool {
 	// We check if tfss contain only single filter which is __name__
 	return len(tfss) == 1 && len(tfss[0].tfs) == 1 && getMetricNameFilter(tfss[0]) != nil
-}
-
-func (is *indexSearch) searchMetricIDsWithFiltersOnDate(qt *querytracer.Tracer, tfss []*TagFilters, date uint64, maxMetrics int) (*uint64set.Set, error) {
-	if len(tfss) == 0 {
-		return nil, nil
-	}
-
-	var tr TimeRange
-	if date == globalIndexDate {
-		tr = globalIndexTimeRange
-	} else {
-		tr = TimeRange{
-			MinTimestamp: int64(date) * msecPerDay,
-			MaxTimestamp: int64(date+1)*msecPerDay - 1,
-		}
-	}
-
-	metricIDs, err := is.searchMetricIDsInternal(qt, tfss, tr, maxMetrics)
-	if err != nil {
-		return nil, err
-	}
-	return metricIDs, nil
 }
 
 // searchMetricIDs returns metricIDs for the given tfss and tr.
