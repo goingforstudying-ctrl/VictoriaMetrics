@@ -513,9 +513,7 @@ func (db *indexDB) SearchLabelNames(qt *querytracer.Tracer, tfss []*TagFilters, 
 		return nil, nil
 	}
 
-	is := db.getIndexSearch(deadline)
-	lns, err := is.searchLabelNamesWithFiltersOnTimeRange(qt, tfss, tr, maxLabelNames, maxMetrics)
-	db.putIndexSearch(is)
+	lns, err := db.searchLabelNames(qt, tfss, tr, maxLabelNames, maxMetrics, deadline)
 	if err != nil {
 		return nil, db.wrapError("search label names", err)
 	}
@@ -524,10 +522,10 @@ func (db *indexDB) SearchLabelNames(qt *querytracer.Tracer, tfss []*TagFilters, 
 	return lns, nil
 }
 
-func (is *indexSearch) searchLabelNamesWithFiltersOnTimeRange(qt *querytracer.Tracer, tfss []*TagFilters, tr TimeRange, maxLabelNames, maxMetrics int) (map[string]struct{}, error) {
+func (db *indexDB) searchLabelNames(qt *querytracer.Tracer, tfss []*TagFilters, tr TimeRange, maxLabelNames, maxMetrics int, deadline uint64) (map[string]struct{}, error) {
 	if tr == globalIndexTimeRange {
 		qtChild := qt.NewChild("search for label names in global index: filters=%s", tfss)
-		lns, err := is.searchLabelNamesWithFiltersOnDate(qtChild, tfss, globalIndexDate, maxLabelNames, maxMetrics)
+		lns, err := db.searchLabelNamesByDateAndFilters(qtChild, globalIndexDate, tfss, maxLabelNames, maxMetrics, deadline)
 		qtChild.Done()
 		return lns, err
 	}
@@ -542,10 +540,7 @@ func (is *indexSearch) searchLabelNamesWithFiltersOnTimeRange(qt *querytracer.Tr
 		qtChild := qt.NewChild("search for label names: filters=%s, date=%s", tfss, dateToString(date))
 		wg.Go(func() {
 			defer qtChild.Done()
-
-			isLocal := is.db.getIndexSearch(is.deadline)
-			lnsLocal, err := isLocal.searchLabelNamesWithFiltersOnDate(qtChild, tfss, date, maxLabelNames, maxMetrics)
-			is.db.putIndexSearch(isLocal)
+			lnsLocal, err := db.searchLabelNamesByDateAndFilters(qtChild, date, tfss, maxLabelNames, maxMetrics, deadline)
 			mu.Lock()
 			defer mu.Unlock()
 			if errGlobal != nil {
@@ -569,11 +564,14 @@ func (is *indexSearch) searchLabelNamesWithFiltersOnTimeRange(qt *querytracer.Tr
 	return lns, errGlobal
 }
 
-func (is *indexSearch) searchLabelNamesWithFiltersOnDate(qt *querytracer.Tracer, tfss []*TagFilters, date uint64, maxLabelNames, maxMetrics int) (map[string]struct{}, error) {
+func (db *indexDB) searchLabelNamesByDateAndFilters(qt *querytracer.Tracer, date uint64, tfss []*TagFilters, maxLabelNames, maxMetrics int, deadline uint64) (map[string]struct{}, error) {
+	is := db.getIndexSearch(deadline)
+	defer db.putIndexSearch(is)
+
 	var filter *uint64set.Set
 	if !isSingleMetricNameFilter(tfss) {
 		var err error
-		filter, err = is.searchMetricIDsWithFiltersOnDate(qt, tfss, date, maxMetrics)
+		filter, err = db.searchMetricIDsByDateAndFilters(qt, tfss, date, maxMetrics, deadline, true)
 		if err != nil {
 			return nil, err
 		}
