@@ -1995,6 +1995,7 @@ func (db *indexDB) SearchMetricNames(qt *querytracer.Tracer, tfss []*TagFilters,
 	if err != nil {
 		return nil, db.wrapError("search metric names", err)
 	}
+	qt.Printf("found %d unique metric name(s)", len(metricNames))
 	return metricNames, nil
 }
 
@@ -2019,14 +2020,22 @@ func (db *indexDB) searchMetricNames(qt *querytracer.Tracer, tfss []*TagFilters,
 	var wg sync.WaitGroup
 	metricNamesByDate := make([][]string, numDays)
 	errsByDate := make([]error, numDays)
+	qt = qt.NewChild("search metric names by metricIDs concurrently on %d days", numDays)
+	defer qt.Done()
 	for day := range numDays {
 		date := minDate + uint64(day)
+		var dateStr string
+		if qt.Enabled() {
+			dateStr = dateToString(date)
+		}
+		metricIDs := uniqMetricIDsByDate[date]
+		if metricIDs.Len() == 0 {
+			continue
+		}
+		qtChild := qt.NewChild("search metric names: date=%s, numMetricIDs=%d", dateStr, metricIDs.Len())
 		wg.Go(func() {
-			metricIDs := uniqMetricIDsByDate[date]
-			// TODO: do not check for nil?
-			if metricIDs != nil {
-				metricNamesByDate[day], errsByDate[day] = db.searchMetricNamesByMetricIDs(qt, metricIDs, deadline)
-			}
+			defer qtChild.Done()
+			metricNamesByDate[day], errsByDate[day] = db.searchMetricNamesByMetricIDs(qtChild, metricIDs, deadline)
 		})
 	}
 	wg.Wait()
@@ -2039,10 +2048,12 @@ func (db *indexDB) searchMetricNames(qt *querytracer.Tracer, tfss []*TagFilters,
 		numMetricNames += len(metricNamesByDate[day])
 	}
 
+	qt.Printf("merge %d metric name(s)", numMetricNames)
 	all := make([]string, 0, numMetricNames)
 	for _, metricNames := range metricNamesByDate {
 		all = append(all, metricNames...)
 	}
+
 	return all, nil
 }
 
