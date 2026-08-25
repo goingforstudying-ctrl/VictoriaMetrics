@@ -1685,7 +1685,13 @@ func (is *indexSearch) loadDeletedMetricIDs() (*uint64set.Set, error) {
 	return dmis, nil
 }
 
-// TODO: increment globalIndexSearch and dateRangeIndexSearch counters
+// searchMetricIDs searches metricIDs by tag filters within the given time
+// range and returns the set of metrics for each date within the time range.
+//
+// The returned metricIDs are unique.
+//
+// If the number of unique metricIDs exceeds maxMetrics limit, the method
+// returns an error.
 func (db *indexDB) searchMetricIDs(qt *querytracer.Tracer, tfss []*TagFilters, tr TimeRange, maxMetrics int, deadline uint64) (map[uint64]*uint64set.Set, error) {
 	qt = qt.NewChild("search metricIDs: filters=%s, timeRange=%v, maxMetrics=%d", tfss, &tr, maxMetrics)
 	defer qt.Done()
@@ -1703,9 +1709,11 @@ func (db *indexDB) searchMetricIDs(qt *querytracer.Tracer, tfss []*TagFilters, t
 	if tr == globalIndexTimeRange {
 		qtChild := qt.NewChild("search metricIDs in global index: filters=%s, maxMetrics=%d", tfss, maxMetrics)
 		defer qtChild.Done()
+		db.globalSearchCalls.Add(1)
 		return f(globalIndexDate)
 	}
 
+	db.dateRangeSearchCalls.Add(1)
 	minDate, maxDate := tr.DateRange()
 	numDays := maxDate - minDate + 1
 	if numDays == 1 {
