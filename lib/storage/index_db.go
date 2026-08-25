@@ -1685,7 +1685,11 @@ func (is *indexSearch) loadDeletedMetricIDs() (*uint64set.Set, error) {
 	return dmis, nil
 }
 
+// TODO: increment globalIndexSearch and dateRangeIndexSearch counters
 func (db *indexDB) searchMetricIDs(qt *querytracer.Tracer, tfss []*TagFilters, tr TimeRange, maxMetrics int, deadline uint64) (map[uint64]*uint64set.Set, error) {
+	qt = qt.NewChild("search metricIDs: filters=%s, timeRange=%v, maxMetrics=%d", tfss, &tr, maxMetrics)
+	defer qt.Done()
+
 	uniqMetricIDsByDate := make(map[uint64]*uint64set.Set)
 	f := func(date uint64) (map[uint64]*uint64set.Set, error) {
 		metricIDs, err := db.searchMetricIDsByDateAndFilters(qt, tfss, date, maxMetrics, deadline, true)
@@ -1697,22 +1701,39 @@ func (db *indexDB) searchMetricIDs(qt *querytracer.Tracer, tfss []*TagFilters, t
 	}
 
 	if tr == globalIndexTimeRange {
+		qtChild := qt.NewChild("search metricIDs in global index: filters=%s, maxMetrics=%d", tfss, maxMetrics)
+		defer qtChild.Done()
 		return f(globalIndexDate)
 	}
 
 	minDate, maxDate := tr.DateRange()
 	numDays := maxDate - minDate + 1
 	if numDays == 1 {
-		return f(minDate)
+		date := minDate
+		// TODO(@rtm0): Try removing qt.Enabled() and see if it affect performance.
+		if qt.Enabled() {
+			qtChild := qt.NewChild("search metricIDs in per-day index on 1 day: filters=%s, date=%s, maxMetrics=%d", tfss, dateToString(date), maxMetrics)
+			defer qtChild.Done()
+		}
+		return f(date)
 	}
+
+	qtMultiDaySearch := qt.NewChild("search metricIDs concurrently in per-day index on %d days", numDays)
+	defer qtMultiDaySearch.Done()
 
 	var wg sync.WaitGroup
 	metricIDsByDate := make([]*uint64set.Set, numDays)
 	errByDate := make([]error, numDays)
 	for day := range numDays {
 		date := minDate + uint64(day)
+		var dateStr string
+		if qt.Enabled() {
+			dateStr = dateToString(date)
+		}
+		qtChild := qtMultiDaySearch.NewChild("search metricIDs: filters=%s, date=%s, maxMetrics=%d", tfss, dateStr, maxMetrics)
 		wg.Go(func() {
-			metricIDsByDate[day], errByDate[day] = db.searchMetricIDsByDateAndFilters(qt, tfss, date, maxMetrics, deadline, true)
+			defer qtChild.Done()
+			metricIDsByDate[day], errByDate[day] = db.searchMetricIDsByDateAndFilters(qtChild, tfss, date, maxMetrics, deadline, true)
 		})
 	}
 	wg.Wait()
@@ -1723,6 +1744,7 @@ func (db *indexDB) searchMetricIDs(qt *querytracer.Tracer, tfss []*TagFilters, t
 	}
 
 	// Deduplicate metricIDs since a metricID may exist for several days.
+	qtMultiDaySearch.Printf("deduplicate metricIDs")
 	seen := &uint64set.Set{}
 	var err error
 	for day, metricIDs := range metricIDsByDate {
@@ -1752,13 +1774,16 @@ func (db *indexDB) searchMetricIDs(qt *querytracer.Tracer, tfss []*TagFilters, t
 	if err != nil {
 		return nil, err
 	}
+	qtMultiDaySearch.Printf("found %d unique metricIDs", seen.Len())
 	return uniqMetricIDsByDate, nil
 }
 
+// TODO: change order: date, tfss, maxMetrics, useCache, deadline
 func (db *indexDB) searchMetricIDsByDateAndFilters(qt *querytracer.Tracer, tfss []*TagFilters, date uint64, maxMetrics int, deadline uint64, useCache bool) (*uint64set.Set, error) {
-	// TODO: stringToDate
-	qt = qt.NewChild("search metricIDs: filters=%s, date=%d", tfss, date)
-	defer qt.Done()
+	if qt.Enabled() {
+		qt = qt.NewChild("search metricIDs: filters=%s, date=%s, maxMetrics=%d, useCache=%t", tfss, dateToString(date), maxMetrics, useCache)
+		defer qt.Done()
+	}
 
 	if len(tfss) == 0 {
 		return nil, nil
@@ -1812,6 +1837,7 @@ func (db *indexDB) searchMetricIDsByDateAndFilters(qt *querytracer.Tracer, tfss 
 		db.putMetricIDsToTagFiltersCache(qt, metricIDs, tfKeyBuf.B)
 	}
 
+	qt.Printf("found %d metricIDs", metricIDs.Len())
 	return metricIDs, nil
 }
 
@@ -2561,7 +2587,7 @@ func (is *indexSearch) updateMetricIDsForOrSuffix(prefix []byte, metricIDs *uint
 
 func (is *indexSearch) getMetricIDsForDateAndFilters(qt *querytracer.Tracer, date uint64, tfs *TagFilters, maxMetrics int) (*uint64set.Set, error) {
 	if qt.Enabled() {
-		qt = qt.NewChild("search for metric ids on a particular day: filters=%s, date=%s, maxMetrics=%d", tfs, dateToString(date), maxMetrics)
+		qt = qt.NewChild("search metricIDs: filters=%s, date=%s, maxMetrics=%d", tfs, dateToString(date), maxMetrics)
 		defer qt.Done()
 	}
 
@@ -2762,7 +2788,7 @@ func (is *indexSearch) getMetricIDsForDateAndFilters(qt *querytracer.Tracer, dat
 		}
 		return &m, nil
 	}
-	qt.Printf("found %d metric ids", metricIDs.Len())
+	qt.Printf("found %d metricIDs", metricIDs.Len())
 	return metricIDs, nil
 }
 
@@ -2974,10 +3000,9 @@ func (is *indexSearch) hasMetricIDSlow(metricID uint64) bool {
 	return true
 }
 
-func (is *indexSearch) getMetricIDsForDateTagFilter(qt *querytracer.Tracer, tf *tagFilter, date uint64, commonPrefix []byte,
-	maxMetrics int, maxLoopsCount int64) (*uint64set.Set, int64, error) {
+func (is *indexSearch) getMetricIDsForDateTagFilter(qt *querytracer.Tracer, tf *tagFilter, date uint64, commonPrefix []byte, maxMetrics int, maxLoopsCount int64) (*uint64set.Set, int64, error) {
 	if qt.Enabled() {
-		qt = qt.NewChild("get metric ids for filter and date: filter={%s}, date=%s, maxMetrics=%d, maxLoopsCount=%d", tf, dateToString(date), maxMetrics, maxLoopsCount)
+		qt = qt.NewChild("search metricIDs: filter={%s}, date=%s, maxMetrics=%d, maxLoopsCount=%d", tf, dateToString(date), maxMetrics, maxLoopsCount)
 		defer qt.Done()
 	}
 
