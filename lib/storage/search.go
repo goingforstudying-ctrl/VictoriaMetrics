@@ -1,9 +1,11 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/encoding"
@@ -145,9 +147,6 @@ type Search struct {
 	// tfss contains tag filters used in the search.
 	tfss []*TagFilters
 
-	// deadline in unix timestamp seconds for the current search.
-	deadline uint64
-
 	err error
 
 	needClosing bool
@@ -172,7 +171,6 @@ func (s *Search) reset() {
 	s.ts.reset()
 	s.tr = TimeRange{}
 	s.tfss = nil
-	s.deadline = 0
 	s.err = nil
 	s.needClosing = false
 	s.loops = 0
@@ -186,7 +184,7 @@ func (s *Search) reset() {
 // MustClose must be called when the search is done.
 //
 // Init returns the upper bound on the number of found time series.
-func (s *Search) Init(qt *querytracer.Tracer, storage *Storage, tfss []*TagFilters, tr TimeRange, maxMetrics int, deadline uint64) int {
+func (s *Search) Init(ctx *RequestContext, qt *querytracer.Tracer, storage *Storage, tfss []*TagFilters, tr TimeRange, maxMetrics int) int {
 	qt = qt.NewChild("init series search: filters=%s, timeRange=%s, maxMetrics=%d", tfss, &tr, maxMetrics)
 	defer qt.Done()
 
@@ -201,10 +199,9 @@ func (s *Search) Init(qt *querytracer.Tracer, storage *Storage, tfss []*TagFilte
 	s.metricsTracker = storage.metricsTracker
 	s.tr = tr
 	s.tfss = tfss
-	s.deadline = deadline
 	s.needClosing = true
 
-	tsids, err := storage.SearchTSIDs(qt, tfss, tr, maxMetrics, deadline)
+	tsids, err := storage.SearchTSIDs(ctx, qt, tfss, tr, maxMetrics)
 
 	// It is ok to call Init on non-nil err.
 	// Init must be called before returning because it will fail
@@ -237,14 +234,14 @@ func (s *Search) Error() error {
 }
 
 // NextMetricBlock proceeds to the next MetricBlockRef.
-func (s *Search) NextMetricBlock() bool {
+func (s *Search) NextMetricBlock(ctx *RequestContext) bool {
 	if s.err != nil {
 		return false
 	}
 	for s.ts.NextBlock() {
 		if s.loops&paceLimiterSlowIterationsMask == 0 {
-			if err := checkSearchDeadlineAndPace(s.deadline); err != nil {
-				s.err = err
+			if ctx.IsDone() {
+				s.err = ctx.Err()
 				return false
 			}
 		}
@@ -580,15 +577,68 @@ func (sq *SearchQuery) Unmarshal(src []byte) ([]byte, error) {
 	return src, nil
 }
 
-func checkSearchDeadlineAndPace(deadline uint64) error {
-	if fasttime.UnixTimestamp() > deadline {
-		return ErrDeadlineExceeded
-	}
-	return nil
-}
-
 const (
 	paceLimiterFastIterationsMask   = 1<<16 - 1
 	paceLimiterMediumIterationsMask = 1<<14 - 1
 	paceLimiterSlowIterationsMask   = 1<<12 - 1
 )
+
+var noDeadlineContext = NewRequestContext(context.Background(), noDeadline)
+
+// RequestContext defines context for storage requests
+type RequestContext struct {
+	context.Context
+
+	deadline uint64
+}
+
+// NewRequestContext returns RequestContext for given parent context and deadline timestmap
+func NewRequestContext(ctx context.Context, deadline uint64) *RequestContext {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return &RequestContext{
+		Context:  ctx,
+		deadline: deadline,
+	}
+}
+
+// DeadlineTimestamp returns deadline timestamp
+func (rc *RequestContext) DeadlineTimestamp() uint64 {
+	return rc.deadline
+}
+
+// Deadline returns the earliest of the deadlines
+func (rc *RequestContext) Deadline() (time.Time, bool) {
+	deadline, ok := time.Time{}, false
+	if rc.deadline != noDeadline {
+		deadline, ok = time.Unix(int64(rc.deadline), 0), true
+	}
+	if parentDeadline, parentOK := rc.Context.Deadline(); parentOK {
+		if !ok || parentDeadline.Before(deadline) {
+			deadline, ok = parentDeadline, true
+		}
+	}
+	return deadline, ok
+}
+
+// IsDone checks if context canceled or deadline expired
+func (rc *RequestContext) IsDone() bool {
+	if fasttime.UnixTimestamp() > rc.deadline {
+		return true
+	}
+	select {
+	case <-rc.Done():
+		return true
+	default:
+	}
+	return false
+}
+
+// Err returns possible error for context
+func (rc *RequestContext) Err() error {
+	if fasttime.UnixTimestamp() > rc.deadline {
+		return ErrDeadlineExceeded
+	}
+	return rc.Context.Err()
+}
