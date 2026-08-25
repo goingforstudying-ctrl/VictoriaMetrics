@@ -1,8 +1,29 @@
 package cgroup
 
 import (
+	"os"
 	"testing"
 )
+
+func TestIsFiniteCgroupMemoryLimit(t *testing.T) {
+	f := func(mem int64, want bool) {
+		t.Helper()
+		if got := isFiniteCgroupMemoryLimit(mem); got != want {
+			t.Fatalf("unexpected result for memory limit %d; got %v; want %v", mem, got, want)
+		}
+	}
+
+	f(-1, false)
+	f(0, false)
+	f(1, true)
+
+	maxInt := int64(^uint(0) >> 1)
+	pageSize := int64(os.Getpagesize())
+	cgroupV1Unlimited := maxInt / pageSize * pageSize
+	f(cgroupV1Unlimited-1, true)
+	f(cgroupV1Unlimited, false)
+	f(maxInt, false)
+}
 
 func TestGetHierarchicalMemoryLimitSuccess(t *testing.T) {
 	f := func(sysPath, cgroupPath string, want int64) {

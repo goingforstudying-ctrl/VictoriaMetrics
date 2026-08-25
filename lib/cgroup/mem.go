@@ -7,6 +7,8 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+
+	"github.com/VictoriaMetrics/metrics"
 )
 
 // GetGOGC returns GOGC value for the currently running process.
@@ -31,6 +33,36 @@ func SetGOGC(gogcNew int) {
 }
 
 var gogc int
+
+func init() {
+	memoryLimit := float64(getCgroupMemoryLimit())
+	metrics.NewGauge("process_memory_cgroup_limit_bytes", func() float64 {
+		return memoryLimit
+	})
+}
+
+func getCgroupMemoryLimit() int64 {
+	mem := GetMemoryLimit()
+	if isFiniteCgroupMemoryLimit(mem) {
+		return mem
+	}
+
+	// Try reading hierarchical memory limit.
+	// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/699
+	mem = GetHierarchicalMemoryLimit()
+	if isFiniteCgroupMemoryLimit(mem) {
+		return mem
+	}
+	return 0
+}
+
+func isFiniteCgroupMemoryLimit(mem int64) bool {
+	// Cgroup v1 represents an unlimited value as MaxInt rounded down to a page boundary.
+	maxInt := int64(^uint(0) >> 1)
+	pageSize := int64(os.Getpagesize())
+	cgroupV1Unlimited := maxInt / pageSize * pageSize
+	return mem > 0 && mem < cgroupV1Unlimited
+}
 
 // GetMemoryLimit returns cgroup memory limit
 func GetMemoryLimit() int64 {
