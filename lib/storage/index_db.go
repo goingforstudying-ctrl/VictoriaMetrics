@@ -568,7 +568,7 @@ func (db *indexDB) searchLabelNamesByDateAndFilters(qt *querytracer.Tracer, date
 	var filter *uint64set.Set
 	if !isSingleMetricNameFilter(tfss) {
 		var err error
-		filter, err = db.searchMetricIDsByDateAndFilters(qt, tfss, date, maxMetrics, deadline, true)
+		filter, err = db.searchMetricIDsByDateAndFilters(qt, date, tfss, maxMetrics, true, deadline)
 		if err != nil {
 			return nil, err
 		}
@@ -839,7 +839,7 @@ func (db *indexDB) searchLabelValuesByDateAndFilters(qt *querytracer.Tracer, dat
 		var err error
 		// TODO(@rtm0): It asks for non-composite scan but
 		// searchMetricIDsByDateAndFilters will convert it to composite filter.
-		filter, err = db.searchMetricIDsByDateAndFilters(qt, tfss, date, maxMetrics, deadline, true)
+		filter, err = db.searchMetricIDsByDateAndFilters(qt, date, tfss, maxMetrics, true, deadline)
 		if err != nil {
 			return nil, err
 		}
@@ -1300,7 +1300,7 @@ func (db *indexDB) GetTSDBStatus(qt *querytracer.Tracer, tfss []*TagFilters, dat
 
 // getTSDBStatus returns topN entries for tsdb status for the given tfss, date and focusLabel.
 func (db *indexDB) getTSDBStatus(qt *querytracer.Tracer, date uint64, tfss []*TagFilters, focusLabel string, topN, maxMetrics int, deadline uint64) (*TSDBStatus, error) {
-	filter, err := db.searchMetricIDsByDateAndFilters(qt, tfss, date, maxMetrics, deadline, true)
+	filter, err := db.searchMetricIDsByDateAndFilters(qt, date, tfss, maxMetrics, true, deadline)
 	if err != nil {
 		return nil, err
 	}
@@ -1536,7 +1536,9 @@ func (db *indexDB) DeleteSeries(qt *querytracer.Tracer, tfss []*TagFilters, maxM
 	// Unconditionally search global index since a given day in per-day
 	// index may not contain the full set of metricIDs that correspond
 	// to the tfss.
-	metricIDs, err := db.searchMetricIDsByDateAndFilters(qt, tfss, globalIndexDate, maxMetrics, noDeadline, false)
+	// Also do not use tag filters cache since it may contain metricIDs that
+	// have already been deleted.
+	metricIDs, err := db.searchMetricIDsByDateAndFilters(qt, globalIndexDate, tfss, maxMetrics, false, noDeadline)
 	if err != nil {
 		return nil, db.wrapError("delete series", err)
 	}
@@ -1698,7 +1700,7 @@ func (db *indexDB) searchMetricIDs(qt *querytracer.Tracer, tfss []*TagFilters, t
 
 	uniqMetricIDsByDate := make(map[uint64]*uint64set.Set)
 	f := func(date uint64) (map[uint64]*uint64set.Set, error) {
-		metricIDs, err := db.searchMetricIDsByDateAndFilters(qt, tfss, date, maxMetrics, deadline, true)
+		metricIDs, err := db.searchMetricIDsByDateAndFilters(qt, date, tfss, maxMetrics, true, deadline)
 		if err != nil {
 			return nil, err
 		}
@@ -1741,7 +1743,7 @@ func (db *indexDB) searchMetricIDs(qt *querytracer.Tracer, tfss []*TagFilters, t
 		qtChild := qtMultiDaySearch.NewChild("search metricIDs: filters=%s, date=%s, maxMetrics=%d", tfss, dateStr, maxMetrics)
 		wg.Go(func() {
 			defer qtChild.Done()
-			metricIDsByDate[day], errByDate[day] = db.searchMetricIDsByDateAndFilters(qtChild, tfss, date, maxMetrics, deadline, true)
+			metricIDsByDate[day], errByDate[day] = db.searchMetricIDsByDateAndFilters(qtChild, date, tfss, maxMetrics, true, deadline)
 		})
 	}
 	wg.Wait()
@@ -1786,8 +1788,15 @@ func (db *indexDB) searchMetricIDs(qt *querytracer.Tracer, tfss []*TagFilters, t
 	return uniqMetricIDsByDate, nil
 }
 
-// TODO: change order: date, tfss, maxMetrics, useCache, deadline
-func (db *indexDB) searchMetricIDsByDateAndFilters(qt *querytracer.Tracer, tfss []*TagFilters, date uint64, maxMetrics int, deadline uint64, useCache bool) (*uint64set.Set, error) {
+// searchMetricIDsByDateAndFilters searches metricIDs by a date and the
+// collection of tag filters.
+//
+// If the number of found metricIDs exceeds maxMetrics limit, the method returns
+// an error.
+//
+// If useCache is true, the method will try to get the metricIDs from tag
+// filters cache before searching.
+func (db *indexDB) searchMetricIDsByDateAndFilters(qt *querytracer.Tracer, date uint64, tfss []*TagFilters, maxMetrics int, useCache bool, deadline uint64) (*uint64set.Set, error) {
 	if qt.Enabled() {
 		qt = qt.NewChild("search metricIDs: filters=%s, date=%s, maxMetrics=%d, useCache=%t", tfss, dateToString(date), maxMetrics, useCache)
 		defer qt.Done()

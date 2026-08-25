@@ -135,7 +135,7 @@ func BenchmarkHeadPostingForMatchers(b *testing.B) {
 		for range b.N {
 			// Use special globalIndexDate to instruct indexDB to search global
 			// index instead of per-day index.
-			metricIDs, err := db.searchMetricIDsByDateAndFilters(nil, tfss, globalIndexDate, 2e9, noDeadline, true)
+			metricIDs, err := db.searchMetricIDsByDateAndFilters(nil, globalIndexDate, tfss, 2e9, true, noDeadline)
 			if err != nil {
 				b.Fatalf("unexpected error in searchMetricIDs: %s", err)
 			}
