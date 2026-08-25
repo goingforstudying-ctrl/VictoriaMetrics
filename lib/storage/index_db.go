@@ -1865,6 +1865,7 @@ func (db *indexDB) SearchTSIDs(qt *querytracer.Tracer, tfss []*TagFilters, tr Ti
 	if err != nil {
 		return nil, db.wrapError("search TSIDs", err)
 	}
+	qt.Printf("found %d unique TSID(s)", len(tsids))
 	return tsids, nil
 }
 
@@ -1889,30 +1890,46 @@ func (db *indexDB) searchTSIDs(qt *querytracer.Tracer, tfss []*TagFilters, tr Ti
 	var wg sync.WaitGroup
 	tsidsByDate := make([][]TSID, numDays)
 	errsByDate := make([]error, numDays)
+	qt = qt.NewChild("search metric TSIDs by metricIDs concurrently on %d days", numDays)
+	defer qt.Done()
 	for day := range numDays {
 		date := minDate + uint64(day)
+		var dateStr string
+		if qt.Enabled() {
+			dateStr = dateToString(date)
+		}
+		metricIDs := uniqMetricIDsByDate[date]
+		if metricIDs.Len() == 0 {
+			continue
+		}
+		qtChild := qt.NewChild("search TSIDs: date=%s, numMetricIDs=%d", dateStr, metricIDs.Len())
 		wg.Go(func() {
-			metricIDs := uniqMetricIDsByDate[date]
-			if metricIDs != nil {
-				tsidsByDate[day], errsByDate[day] = db.searchTSIDsByMetricIDs(qt, metricIDs, deadline)
-			}
+			defer qtChild.Done()
+			tsidsByDate[day], errsByDate[day] = db.searchTSIDsByMetricIDs(qt, metricIDs, deadline)
 		})
 	}
 	wg.Wait()
-	for _, err := range errsByDate {
+	var numTSIDs int
+	for day := range numDays {
+		err := errsByDate[day]
 		if err != nil {
 			return nil, err
 		}
+		numTSIDs += len(tsidsByDate[day])
 	}
 
+	qt.Printf("merge %d TSID(s)", numTSIDs)
 	tsids := mergeSortedTSIDs(tsidsByDate)
 	return tsids, nil
 }
 
 func (db *indexDB) searchTSIDsByMetricIDs(qt *querytracer.Tracer, metricIDs *uint64set.Set, deadline uint64) ([]TSID, error) {
-	var err error
+	qt = qt.NewChild("search TSIDs by %d metricIDs", metricIDs.Len())
+	defer qt.Done()
+
 	tsids := make([]TSID, metricIDs.Len())
 	metricIDsToDelete := &uint64set.Set{}
+	var err error
 	i := 0
 	paceLimiter := 0
 	is := db.getIndexSearch(deadline)
@@ -2080,7 +2097,7 @@ func (db *indexDB) searchMetricNamesByMetricIDs(qt *querytracer.Tracer, metricID
 
 			metricName, ok = is.searchMetricNameWithCache(metricName[:0], metricID)
 			if !ok {
-				// Cannot find TSID for the given metricID.
+				// Cannot find metric name for the given metricID.
 				// This may be the case on incomplete indexDB
 				// due to snapshot or due to un-flushed entries.
 				// Mark the metricID as deleted, so it is created again when new sample
