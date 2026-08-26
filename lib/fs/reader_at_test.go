@@ -13,6 +13,18 @@ func TestReaderAt(t *testing.T) {
 	}
 }
 
+func TestMustOpenReaderAtRandomAccess(t *testing.T) {
+	r := MustOpenReaderAt("foo")
+	if r.useRandomReadHint {
+		t.Fatalf("unexpected random read hint for MustOpenReaderAt")
+	}
+
+	r = MustOpenReaderAtRandomAccess("foo")
+	if !r.useRandomReadHint {
+		t.Fatalf("missing random read hint for MustOpenReaderAtRandomAccess")
+	}
+}
+
 func testReaderAt(t *testing.T, bufSize int) {
 	path := "TestReaderAt"
 	const fileSize = 8 * 1024 * 1024
