@@ -1761,11 +1761,12 @@ func (db *indexDB) searchMetricIDs(qt *querytracer.Tracer, tfss []*TagFilters, t
 			continue
 		}
 
-		// Create a copy in order to preserve the original this may be coming
-		// from a tfssCache.
-		// The copying could be move to cache's get/put methods, do it here
-		// because copying is needed only in case of deduplication after the
-		// concurrent multi-day searches.
+		// Create a copy in order to preserve the original set that may be
+		// coming from a tfssCache.
+		//
+		// The correct place for creating a copy would be cache's get/put
+		// methods. Doing it here because copying is needed only in case of
+		// deduplication after a concurrent multi-day search.
 		uniqMetricIDs := metricIDs.Clone()
 		uniqMetricIDs.Subtract(seen)
 		seen.Union(uniqMetricIDs)
@@ -1787,8 +1788,7 @@ func (db *indexDB) searchMetricIDs(qt *querytracer.Tracer, tfss []*TagFilters, t
 	return uniqMetricIDsByDate, nil
 }
 
-// searchMetricIDsByDateAndFilters searches metricIDs by a date and the
-// collection of tag filters.
+// searchMetricIDsByDateAndFilters searches metricIDs by a date and tag filters.
 //
 // If the number of found metricIDs exceeds maxMetrics limit, the method returns
 // an error.
