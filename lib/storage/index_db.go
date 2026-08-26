@@ -1720,7 +1720,6 @@ func (db *indexDB) searchMetricIDs(qt *querytracer.Tracer, tfss []*TagFilters, t
 	numDays := maxDate - minDate + 1
 	if numDays == 1 {
 		date := minDate
-		// TODO(@rtm0): Try removing qt.Enabled() and see if it affect performance.
 		if qt.Enabled() {
 			qtChild := qt.NewChild("search metricIDs in per-day index on 1 day: filters=%s, date=%s, maxMetrics=%d", tfss, dateToString(date), maxMetrics)
 			defer qtChild.Done()
