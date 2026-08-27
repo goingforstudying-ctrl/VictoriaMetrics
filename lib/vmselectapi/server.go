@@ -1265,7 +1265,7 @@ func writeMetadataRows(ctx *vmselectRequestCtx, records []*metricsmetadata.Row) 
 	return nil
 }
 
-// nnewRequestContextForConn creates a cancelable storage.RequestContext
+// newRequestContextForConn creates a cancelable storage.RequestContext
 // for given BufferedConn and deadline.
 // I starts monitoring if the client closes or breaks the connection.
 //
