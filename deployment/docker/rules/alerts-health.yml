@@ -90,20 +90,14 @@ groups:
           severity: warning
         annotations:
           summary: "\"{{ $labels.job }}\" ({{ $labels.instance }}) generates too many {{ $labels.level }} logs at {{ $labels.location }}"
-          description: >
-            The job "{{ $labels.job }}" ({{ $labels.instance }}) generated {{ $value }} {{ $labels.level }} log messages
-            at {{ $labels.location }} for the last 5 minutes.
+          description: |
+            The job "{{ $labels.job }}" ({{ $labels.instance }}) generated {{ $value }} {{ $labels.level }} log messages at {{ $labels.location }} for the last 5 minutes.
 
-            The metric `vm_log_messages_total` tracks all log messages including those suppressed by `-loggerLevel`. 
-            Check the `is_printed` label to see whether the log was actually printed.
+            The metric `vm_log_messages_total` tracks all log messages including those suppressed by `-loggerLevel`. Check the `is_printed` label to see whether the log was actually printed.
 
             Actions:
             - Check {{ $labels.job }} ({{ $labels.instance }}) {{ $labels.level }} logs.
-            {{ with printf "vm_log_messages_total{job=%q,instance=%q,location=%q}" $labels.job $labels.instance $labels.location | query | first }}
-            - [Check the source code at {{ $labels.location }}](https://l2s.victoriametrics.com/?app_version={{ .Labels.app_version }}&location={{ $labels.location | urlquery }}).
-            {{ else }}
-            - Check the source code at {{ $labels.location }}.
-            {{ end }}
+            - {{ with printf "vm_log_messages_total{job=%q,instance=%q,location=%q}" $labels.job $labels.instance $labels.location | query | first }}[Check the source code at {{ $labels.location }}](https://l2s.victoriametrics.com/?app_version={{ .Labels.app_version }}&location={{ $labels.location | urlquery }}){{ else }}Check the source code at {{ $labels.location }}.{{ end }}
             - Add `location` label selector to mute noisy alerts.
             - Ask enterprise support for help.
 
@@ -114,11 +108,10 @@ groups:
           severity: warning
         annotations:
           summary: "\"{{ $labels.job }}\" ({{ $labels.instance }}) generates too many warn logs"
-          description: >
+          description: |
             The job "{{ $labels.job }}" ({{ $labels.instance }}) generated {{ $value }} warn log messages for the last 15 minutes.
-            
-            The metric `vm_log_messages_total` tracks all log messages including those suppressed by `-loggerLevel`. 
-            Check the `is_printed` label to see whether the log was actually printed.
+
+            The metric `vm_log_messages_total` tracks all log messages including those suppressed by `-loggerLevel`. Check the `is_printed` label to see whether the log was actually printed.
 
             Actions:
             - Check {{ $labels.job }} ({{ $labels.instance }}) warn logs.
