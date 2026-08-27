@@ -445,13 +445,13 @@ func (bu *backendURL) isBroken() bool {
 func (bu *backendURL) setBroken() {
 	if bu.broken.CompareAndSwap(false, true) {
 		bu.bhc.run(func() {
-			bu.runHealthCheck()
+			bu.runHealthCheck(netutil.Dialer.DialContext)
 			bu.broken.Store(false)
 		})
 	}
 }
 
-func (bu *backendURL) runHealthCheck() {
+func (bu *backendURL) runHealthCheck(dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)) {
 	port := bu.url.Port()
 	if port == "" {
 		port = "80"
@@ -467,7 +467,7 @@ func (bu *backendURL) runHealthCheck() {
 			// Verify network connectivity via TCP dial before marking backend healthy.
 			// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/9997
 			ctx, cancel := context.WithTimeout(bu.bhc.ctx, time.Second)
-			c, err := netutil.Dialer.DialContext(ctx, "tcp", addr)
+			c, err := dialFunc(ctx, netutil.GetTCPNetwork(), addr)
 			cancel()
 			if err != nil {
 				if errors.Is(bu.bhc.ctx.Err(), context.Canceled) {
@@ -575,9 +575,12 @@ func (up *URLPrefix) discoverBackendAddrsIfNeeded() {
 				logger.Warnf("cannot discover backend IPs for %s: %s; use it literally", bu, err)
 				resolvedAddrs = []string{host}
 			} else {
-				resolvedAddrs = make([]string, len(addrs))
-				for i, addr := range addrs {
-					resolvedAddrs[i] = net.JoinHostPort(addr.String(), port)
+				resolvedAddrs = make([]string, 0, len(addrs))
+				for _, addr := range addrs {
+					if !netutil.TCP6Enabled() && addr.IP.To4() == nil {
+						continue
+					}
+					resolvedAddrs = append(resolvedAddrs, net.JoinHostPort(addr.IP.String(), port))
 				}
 			}
 		}
