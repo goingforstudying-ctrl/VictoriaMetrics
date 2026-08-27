@@ -594,7 +594,10 @@ func (is *indexSearch) searchLabelNamesWithFiltersOnDate(ctx *RequestContext, qt
 			// This should help https://github.com/VictoriaMetrics/VictoriaMetrics/issues/2978
 			metricIDs := filter.AppendTo(nil)
 			qt.Printf("sort %d metricIDs", len(metricIDs))
-			lns := is.getLabelNamesForMetricIDs(qt, metricIDs, maxLabelNames)
+			lns, err := is.getLabelNamesForMetricIDs(ctx, qt, metricIDs, maxLabelNames)
+			if err != nil {
+				return nil, err
+			}
 			return lns, nil
 		}
 	}
@@ -680,7 +683,7 @@ func (is *indexSearch) searchLabelNamesWithFiltersOnDate(ctx *RequestContext, qt
 	return lns, nil
 }
 
-func (is *indexSearch) getLabelNamesForMetricIDs(qt *querytracer.Tracer, metricIDs []uint64, maxLabelNames int) map[string]struct{} {
+func (is *indexSearch) getLabelNamesForMetricIDs(ctx *RequestContext, qt *querytracer.Tracer, metricIDs []uint64, maxLabelNames int) (map[string]struct{}, error) {
 	lns := make(map[string]struct{})
 	if len(metricIDs) > 0 {
 		lns["__name__"] = struct{}{}
@@ -691,7 +694,14 @@ func (is *indexSearch) getLabelNamesForMetricIDs(qt *querytracer.Tracer, metricI
 	var mn MetricName
 	foundLabelNames := 0
 	var buf []byte
+	loopsPaceLimiter := 0
 	for _, metricID := range metricIDs {
+		if loopsPaceLimiter&paceLimiterFastIterationsMask == 0 {
+			if ctx.IsDone() {
+				return nil, ctx.Err()
+			}
+		}
+		loopsPaceLimiter++
 		if dmis.Has(metricID) {
 			// skip deleted IDs from result
 			continue
@@ -712,13 +722,13 @@ func (is *indexSearch) getLabelNamesForMetricIDs(qt *querytracer.Tracer, metricI
 				lns[string(tag.Key)] = struct{}{}
 				if len(lns) >= maxLabelNames {
 					qt.Printf("hit the limit on the number of unique label names: %d", maxLabelNames)
-					return lns
+					return lns, nil
 				}
 			}
 		}
 	}
 	qt.Printf("get %d distinct label names from %d metricIDs", foundLabelNames, len(metricIDs))
-	return lns
+	return lns, nil
 }
 
 // SearchTenants returns all tenants on the given tr.
@@ -1000,7 +1010,10 @@ func (is *indexSearch) searchLabelValuesOnDate(ctx *RequestContext, qt *querytra
 			// This should help https://github.com/VictoriaMetrics/VictoriaMetrics/issues/2978
 			metricIDs := filter.AppendTo(nil)
 			qt.Printf("sort %d metricIDs", len(metricIDs))
-			lvs := is.getLabelValuesForMetricIDs(qt, labelName, metricIDs, maxLabelValues)
+			lvs, err := is.getLabelValuesForMetricIDs(ctx, qt, labelName, metricIDs, maxLabelValues)
+			if err != nil {
+				return nil, err
+			}
 			return lvs, nil
 		}
 	}
@@ -1063,7 +1076,7 @@ func (is *indexSearch) searchLabelValuesOnDate(ctx *RequestContext, qt *querytra
 	return lvs, nil
 }
 
-func (is *indexSearch) getLabelValuesForMetricIDs(qt *querytracer.Tracer, labelName string, metricIDs []uint64, maxLabelValues int) map[string]struct{} {
+func (is *indexSearch) getLabelValuesForMetricIDs(ctx *RequestContext, qt *querytracer.Tracer, labelName string, metricIDs []uint64, maxLabelValues int) (map[string]struct{}, error) {
 	if labelName == "" {
 		labelName = "__name__"
 	}
@@ -1073,7 +1086,14 @@ func (is *indexSearch) getLabelValuesForMetricIDs(qt *querytracer.Tracer, labelN
 	var mn MetricName
 	foundLabelValues := 0
 	var buf []byte
+	loopsPaceLimiter := 0
 	for _, metricID := range metricIDs {
+		if loopsPaceLimiter&paceLimiterFastIterationsMask == 0 {
+			if ctx.IsDone() {
+				return nil, ctx.Err()
+			}
+		}
+		loopsPaceLimiter++
 		if dmis.Has(metricID) {
 			// skip deleted IDs from result
 			continue
@@ -1094,12 +1114,12 @@ func (is *indexSearch) getLabelValuesForMetricIDs(qt *querytracer.Tracer, labelN
 			lvs[string(tagValue)] = struct{}{}
 			if len(lvs) >= maxLabelValues {
 				qt.Printf("hit the limit on the number of unique label values for label %q: %d", labelName, maxLabelValues)
-				return lvs
+				return lvs, nil
 			}
 		}
 	}
 	qt.Printf("get %d distinct values for label %q from %d metricIDs", foundLabelValues, labelName, len(metricIDs))
-	return lvs
+	return lvs, nil
 }
 
 // SearchTagValueSuffixes returns all the tag value suffixes for the given tagKey and tagValuePrefix on the given tr.

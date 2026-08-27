@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/encoding"
@@ -606,20 +605,6 @@ func NewRequestContext(ctx context.Context, deadline uint64) *RequestContext {
 // DeadlineTimestamp returns deadline timestamp
 func (rc *RequestContext) DeadlineTimestamp() uint64 {
 	return rc.deadline
-}
-
-// Deadline returns the earliest of the deadlines
-func (rc *RequestContext) Deadline() (time.Time, bool) {
-	deadline, ok := time.Time{}, false
-	if rc.deadline != noDeadline {
-		deadline, ok = time.Unix(int64(rc.deadline), 0), true
-	}
-	if parentDeadline, parentOK := rc.Context.Deadline(); parentOK {
-		if !ok || parentDeadline.Before(deadline) {
-			deadline, ok = parentDeadline, true
-		}
-	}
-	return deadline, ok
 }
 
 // IsDone checks if context canceled or deadline expired

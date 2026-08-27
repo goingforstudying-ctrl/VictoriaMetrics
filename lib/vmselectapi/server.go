@@ -1300,8 +1300,10 @@ type connMonitor struct {
 }
 
 func (cm *connMonitor) watch() {
-	cm.bc.SetReadDeadline(time.Time{})
+	cm.bc.Conn.SetReadDeadline(time.Time{}) //nolint:errcheck
 	cm.wg.Go(func() {
+		// block on conn.Read
+		// it only closes if stop() called or client closes connection
 		var buf [1]byte
 		n, err := cm.bc.Read(buf[:])
 		_ = err
@@ -1320,10 +1322,11 @@ func (cm *connMonitor) stop() {
 		return
 	}
 	cm.cancel()
-	cm.bc.SetReadDeadline(timeBefore)
+	// unblock watcher with read timeout error
+	cm.bc.Conn.SetReadDeadline(timeLongBefore) //nolint:errcheck
 	cm.wg.Wait()
 	// reset connection deadline
-	cm.bc.SetReadDeadline(time.Time{})
+	cm.bc.Conn.SetReadDeadline(time.Time{}) //nolint:errcheck
 }
 
-var timeBefore = time.Unix(1, 0)
+var timeLongBefore = time.Unix(1, 0)
